@@ -225,7 +225,7 @@ export default function App() {
     jobKeyRef.current = key;
     setJob({ id: null, state: 'submitting', progress: { stage: 'queued', percent: 0 } });
     try {
-      const body = { url: url.trim(), formatId: selectedFormatId, title: info?.title };
+      const body = { url: url.trim(), formatId: selectedFormatId, title: info?.title, duration: info?.duration };
       if (trimEnabled) {
         body.startTime = formatTime(startSec);
         body.endTime = formatTime(endSec);
@@ -247,7 +247,7 @@ export default function App() {
   const pollStatus = useCallback(async () => {
     if (!job?.id) return;
     try {
-      const res = await fetch(`${DEFAULT_API_BASE}/download/status/${job.id}`);
+      const res = await fetch(`${DEFAULT_API_BASE}/download/status/${job.id}`, { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Status check failed');
 
@@ -489,10 +489,7 @@ export default function App() {
 
       <footer className="footer">
         <p>Works with links from YouTube, TikTok, Instagram, Facebook, X, and Threads.</p>
-        <a href="http://danextech.vercel.app" target="_blank" rel="noopener noreferrer" className='link'>developed by danextech</a>
       </footer>
     </div>
   );
 }
-
-
