@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
 import './App.css';
 
-const DEFAULT_API_BASE = 'http://localhost:5000/api';
+const DEFAULT_API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:5000/api';
 const THEME_STORAGE_KEY = 'clipflow-theme';
 
 function formatTime(totalSeconds) {
@@ -295,7 +295,7 @@ export default function App() {
         </div>
         <div className="topbar-right">
           <div className="platform-chips">
-            {['YouTube', 'TikTok', 'Instagram', 'Facebook', 'X'].map((p) => (
+            {['YouTube', 'TikTok', 'Instagram', 'Facebook', 'X', 'Threads'].map((p) => (
               <span key={p} className="platform-chip">{p}</span>
             ))}
           </div>
@@ -488,7 +488,7 @@ export default function App() {
       )}
 
       <footer className="footer">
-        <p>Works with links from YouTube, TikTok, Instagram, Facebook and X</p>
+        <p>Works with links from YouTube, TikTok, Instagram, Facebook, X, and Threads.</p>
       </footer>
     </div>
   );
