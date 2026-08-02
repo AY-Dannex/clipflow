@@ -488,7 +488,7 @@ export default function App() {
       )}
 
       <footer className="footer">
-        <p>Works with links from YouTube, TikTok, Instagram, Facebook, X, and Threads.</p>
+        <p>Works with links from YouTube, TikTok, Instagram, Facebook and X</p>
       </footer>
     </div>
   );
