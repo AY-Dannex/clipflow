@@ -295,7 +295,7 @@ export default function App() {
         </div>
         <div className="topbar-right">
           <div className="platform-chips">
-            {['YouTube', 'TikTok', 'Instagram', 'Facebook', 'X', 'Threads'].map((p) => (
+            {['YouTube', 'TikTok', 'Instagram', 'Facebook', 'X'].map((p) => (
               <span key={p} className="platform-chip">{p}</span>
             ))}
           </div>
