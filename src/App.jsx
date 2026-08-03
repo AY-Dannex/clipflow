@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
 import './App.css';
+import { saveSession, loadSession, clearSession } from './utils/session';
 
 const DEFAULT_API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:5000/api';
 const THEME_STORAGE_KEY = 'clipflow-theme';
@@ -139,15 +140,60 @@ export default function App() {
 
   // The job currently being tracked for the SELECTED quality/trim setting.
   const [job, setJob] = useState(null);
-  // Every completed/failed job we've seen this session, keyed by quality+trim,
-  // so switching back to a setting you already downloaded brings its
-  // "ready to save" button back instead of losing it.
+  // Every completed/failed/cancelled job we've seen this session, keyed by
+  // quality+trim, so switching back to a setting you already downloaded
+  // brings its "ready" state back instead of losing it.
   const [jobsCache, setJobsCache] = useState({});
   const [downloadError, setDownloadError] = useState('');
+  const [cancelling, setCancelling] = useState(false);
   const pollRef = useRef(null);
   const jobKeyRef = useRef(null); // key of the job currently in flight
 
   const jobBusy = job && ['submitting', 'waiting', 'active'].includes(job.state);
+
+  // --- Restore the most recent session on first load (survives refresh) ---
+  useEffect(() => {
+    const saved = loadSession();
+    if (!saved) return;
+
+    setUrl(saved.url || '');
+    setInfo(saved.info || null);
+    setSelectedFormatId(saved.selectedFormatId || null);
+    setTrimEnabled(saved.trimEnabled || false);
+    setStartSec(saved.startSec || 0);
+    setEndSec(saved.endSec || 0);
+
+    if (saved.jobId) {
+      jobKeyRef.current = makeJobKey(saved.selectedFormatId, saved.trimEnabled, saved.startSec, saved.endSec);
+      (async () => {
+        try {
+          const res = await fetch(`${DEFAULT_API_BASE}/download/status/${saved.jobId}`, { cache: 'no-store' });
+          const data = await res.json();
+          if (res.ok) {
+            const restored = {
+              id: saved.jobId,
+              state: data.state,
+              progress: data.progress,
+              failedReason: data.failedReason,
+              attemptsMade: data.attemptsMade,
+            };
+            setJob(restored);
+            if (['completed', 'failed', 'cancelled'].includes(data.state)) {
+              setJobsCache((prev) => ({ ...prev, [jobKeyRef.current]: restored }));
+            }
+          } else {
+            // Job genuinely no longer exists server-side — drop the stale session quietly.
+            clearSession();
+          }
+        } catch {
+          // Network hiccup while restoring — leave the saved session in
+          // place; the user can just try again once connectivity is back.
+        }
+      })();
+    }
+    // Only run once, on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const resetForNewVideo = () => {
     setInfo(null);
@@ -157,6 +203,7 @@ export default function App() {
     setJobsCache({});
     setDownloadError('');
     setInfoError('');
+    clearSession();
   };
 
   const handlePaste = async () => {
@@ -181,8 +228,19 @@ export default function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.details || data.error || 'Failed to fetch video info');
       setInfo(data);
-      if (data.formats?.length) setSelectedFormatId(data.formats[0].format_id);
+      const firstFormatId = data.formats?.length ? data.formats[0].format_id : null;
+      if (firstFormatId) setSelectedFormatId(firstFormatId);
       setEndSec(data.duration || 0);
+
+      saveSession({
+        url: url.trim(),
+        info: data,
+        selectedFormatId: firstFormatId,
+        trimEnabled: false,
+        startSec: 0,
+        endSec: data.duration || 0,
+        jobId: null,
+      });
     } catch (err) {
       setInfoError(err.message);
     } finally {
@@ -197,6 +255,10 @@ export default function App() {
     if (jobBusy) return;
     const key = makeJobKey(formatId, trim, start, end);
     setJob(jobsCache[key] || null);
+    saveSession({
+      url: url.trim(), info, selectedFormatId: formatId, trimEnabled: trim,
+      startSec: start, endSec: end, jobId: (jobsCache[key] || null)?.id || null,
+    });
   };
 
   const selectFormat = (formatId) => {
@@ -225,7 +287,14 @@ export default function App() {
     jobKeyRef.current = key;
     setJob({ id: null, state: 'submitting', progress: { stage: 'queued', percent: 0 } });
     try {
-      const body = { url: url.trim(), formatId: selectedFormatId, title: info?.title, duration: info?.duration };
+      const selectedFormat = info?.formats?.find((f) => f.format_id === selectedFormatId);
+      const body = {
+        url: url.trim(),
+        formatId: selectedFormatId,
+        hasAudio: Boolean(selectedFormat?.hasAudio),
+        title: info?.title,
+        duration: info?.duration,
+      };
       if (trimEnabled) {
         body.startTime = formatTime(startSec);
         body.endTime = formatTime(endSec);
@@ -237,11 +306,30 @@ export default function App() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.details || data.error || 'Failed to start download');
-      setJob({ id: data.jobId, state: 'waiting', progress: { stage: 'queued', percent: 0 } });
+      const newJob = { id: data.jobId, state: 'waiting', progress: { stage: 'queued', percent: 0 } };
+      setJob(newJob);
+      saveSession({
+        url: url.trim(), info, selectedFormatId, trimEnabled, startSec, endSec, jobId: data.jobId,
+      });
     } catch (err) {
       setDownloadError(err.message);
       setJob(null);
     }
+  };
+
+  const cancelDownload = async () => {
+    if (!job?.id || cancelling) return;
+    setCancelling(true);
+    try {
+      await fetch(`${DEFAULT_API_BASE}/download/cancel/${job.id}`, { method: 'POST' });
+    } catch {
+      // Even if this request itself fails, we still reflect the cancellation
+      // locally below — the worker's own periodic check will catch up.
+    }
+    clearInterval(pollRef.current);
+    setJob((prev) => (prev ? { ...prev, state: 'cancelled' } : prev));
+    clearSession();
+    setCancelling(false);
   };
 
   const pollStatus = useCallback(async () => {
@@ -259,16 +347,18 @@ export default function App() {
         attemptsMade: data.attemptsMade,
       };
       setJob(updated);
+      saveSession({
+        url: url.trim(), info, selectedFormatId, trimEnabled, startSec, endSec, jobId: job.id,
+      });
 
-      if (data.state === 'completed' || data.state === 'failed') {
+      if (['completed', 'failed', 'cancelled'].includes(data.state)) {
         clearInterval(pollRef.current);
-        // Remember this result under the setting it belongs to, so
-        // re-selecting this exact quality/trim later brings it right back.
         const key = jobKeyRef.current;
         if (key) {
           setJobsCache((prev) => ({ ...prev, [key]: updated }));
         }
       }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     } catch (err) {
       setDownloadError(err.message);
       clearInterval(pollRef.current);
@@ -295,7 +385,7 @@ export default function App() {
         </div>
         <div className="topbar-right">
           <div className="platform-chips">
-            {['YouTube', 'TikTok', 'Instagram', 'Facebook', 'X', 'Threads'].map((p) => (
+            {['YouTube', 'TikTok', 'Instagram', 'Facebook', 'X'].map((p) => (
               <span key={p} className="platform-chip">{p}</span>
             ))}
           </div>
@@ -461,6 +551,13 @@ export default function App() {
                       style={{ width: `${job.progress?.percent || 0}%` }}
                     />
                   </div>
+                  <button
+                    className="btn btn-ghost cancel-btn"
+                    onClick={cancelDownload}
+                    disabled={cancelling}
+                  >
+                    {cancelling ? 'Cancelling…' : 'Cancel'}
+                  </button>
                 </>
               )}
 
@@ -471,6 +568,10 @@ export default function App() {
                 >
                   ✓ Ready — Save file
                 </a>
+              )}
+
+              {job.state === 'cancelled' && (
+                <p className="cancelled-text">Download cancelled.</p>
               )}
 
               {job.state === 'failed' && (
@@ -488,7 +589,7 @@ export default function App() {
       )}
 
       <footer className="footer">
-        <p>Works with links from YouTube, TikTok, Instagram, Facebook, X, and Threads.</p>
+        <p>Works with links from YouTube, TikTok, Instagram, Facebook and X</p>
       </footer>
     </div>
   );
